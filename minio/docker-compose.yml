@@ -1,13 +1,14 @@
 # =============================================================================
-# MINIO v2 — S3-совместимое хранилище
+# MINIO — S3-совместимое хранилище
 # =============================================================================
 # Промежуточное хранилище для Parquet файлов между Extract и Load.
 # Airflow: Extract (BigQuery/PG) → Parquet → MinIO → Load → ClickHouse
 #
 # Запуск:     docker compose --env-file ../.env up -d
 # Остановка:  docker compose --env-file ../.env down
-# UI:         http://1.2.3.4:9003
-# API:        http://1.2.3.4:9004
+# Логи:       docker compose --env-file ../.env logs -f
+# UI:         http://1.2.3.4:9001
+# API:        http://1.2.3.4:9002
 # =============================================================================
 
 services:
@@ -15,22 +16,19 @@ services:
     # Фиксированная версия — никаких сюрпризов при рестарте
     image: minio/minio:RELEASE.2025-07-23T15-54-02Z
 
-    container_name: datastack2-minio
-    hostname: datastack2-minio
+    container_name: datastack-minio
+    hostname: datastack-minio
 
     # --console-address ":9001" — ВНУТРЕННИЙ порт контейнера
     # Снаружи он маппится на 9003 (см. ports ниже)
     command: server /data --console-address ":9001"
 
     networks:
-      - datastack2-network
+      - datastack-network
 
-    # Порты: не конфликтуют с v1 (9001/9002)
-    #   Хост 9003 → Контейнер 9001 (Web UI)
-    #   Хост 9004 → Контейнер 9000 (S3 API)
     ports:
-      - "${MINIO_UI_PORT:-9003}:9001"
-      - "${MINIO_API_PORT:-9004}:9000"
+      - "${MINIO_UI_PORT:-9001}:9001"
+      - "${MINIO_API_PORT:-9002}:9000"
 
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio_admin}
