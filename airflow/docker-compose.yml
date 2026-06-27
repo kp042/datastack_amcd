@@ -1,0 +1,303 @@
+# ============================================================================
+# DataStack v2 — Apache Airflow 3.1.7 (CeleryExecutor)
+# ============================================================================
+#
+# ИЗМЕНЕНИЯ ОТНОСИТЕЛЬНО AIRFLOW 2.x:
+#   - airflow webserver    → airflow api-server  (UI + REST API)
+#   - airflow users create → SimpleAuthManager   (пользователи через env var)
+#   - [webserver] config   → [api] config        (перенос настроек)
+#
+# Сервисы:
+#   airflow-postgres    — Metadata DB
+#   redis               — Message Broker (Celery)
+#   airflow-init        — Одноразовая миграция БД
+#   airflow-api-server  — UI + REST API (:8080)      ← было: airflow-webserver
+#   airflow-scheduler   — Планировщик
+#   airflow-worker      — Celery Worker (исполнитель)
+#   airflow-triggerer   — Deferrable operators
+#   flower              — Celery мониторинг (:5555)
+#
+# ============================================================================
+
+# ── Общая конфигурация для всех Airflow-контейнеров ──
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  env_file: .env
+  user: "${AIRFLOW_UID:-50000}:0"
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./scripts:/opt/airflow/scripts
+    - ./plugins:/opt/airflow/plugins
+    # Файл паролей SimpleAuthManager - сохраняется между перезапусками
+    - ./auth/simple_auth_manager_passwords.json.generated:/opt/airflow/simple_auth_manager_passwords.json.generated
+    # dbt project
+    - ../dbt:/opt/airflow/dbt
+    # GA4 Pipeline
+    - ../config:/opt/airflow/config:ro
+    - ../credentials:/opt/airflow/credentials:ro
+  networks:
+    - datastack2-network
+  restart: unless-stopped
+  # Ротация Docker-логов (stdout/stderr)
+  # 5 файлов × 10 MB = максимум 50 MB на сервис
+  logging: &airflow-logging
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+volumes:
+  airflow-postgres-data:
+    name: datastack2-airflow-postgres-data
+  redis-data:
+    name: datastack2-redis-data
+
+networks:
+  datastack2-network:
+    external: true
+
+
+services:
+
+  # ================================================================
+  # PostgreSQL — Metadata Database
+  # ================================================================
+  airflow-postgres:
+    image: postgres:16-alpine
+    container_name: datastack2-airflow-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-airflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-airflow}
+    volumes:
+      - airflow-postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - datastack2-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ================================================================
+  # Redis — Message Broker (CeleryExecutor)
+  # ================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: datastack2-redis
+    command: >
+      redis-server
+        --appendonly yes
+        --maxmemory 256mb
+        --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - datastack2-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+  # ================================================================
+  # Airflow Init — одноразовая миграция БД
+  # ================================================================
+  # В Airflow 3: команда `airflow users create` УДАЛЕНА.
+  # Пользователи создаются через SimpleAuthManager (env var в .env).
+  # Init делает ТОЛЬКО миграцию БД.
+  # ================================================================
+  airflow-init:
+    <<: *airflow-common
+    container_name: datastack2-airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        echo '═══════════════════════════════════════════════'
+        echo '  Airflow 3 Init: миграция базы данных         '
+        echo '═══════════════════════════════════════════════'
+        echo ''
+        echo '--- Миграция БД ---'
+        airflow db migrate
+        echo ''
+        echo '═══════════════════════════════════════════════'
+        echo '  Пользователи: SimpleAuthManager              '
+        echo '  Настроены через AIRFLOW__SIMPLE_AUTH_MANAGER  '
+        echo '  __USERS в .env                               '
+        echo '═══════════════════════════════════════════════'
+        echo ''
+        echo '✅ Airflow initialized successfully!'
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: "no"
+
+  # ================================================================
+  # Airflow API Server — UI + REST API
+  # ================================================================
+  # AIRFLOW 3 CHANGE:
+  #   Старое: airflow webserver  (Flask-монолит: UI + API)
+  #   Новое:  airflow api-server (REST API + React UI)
+  #
+  # React UI — новый интерфейс Airflow 3 (SPA, быстрее, удобнее)
+  # Доступ: http://92.204.189.31:8080
+  # ================================================================
+  airflow-api-server:
+    <<: *airflow-common
+    container_name: datastack2-airflow-api-server
+    command: airflow api-server
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  # ================================================================
+  # Airflow Scheduler — планировщик
+  # ================================================================
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: datastack2-airflow-scheduler
+    command: airflow scheduler
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import os; os.kill(1, 0)'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  # ================================================================
+  # Airflow Worker — Celery Worker (исполнитель задач)
+  # ================================================================
+  airflow-worker:
+    <<: *airflow-common
+    container_name: datastack2-airflow-worker
+    command: airflow celery worker
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - 'celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}" || exit 1'
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 60s
+    environment:
+      # Autoscale: max,min — адаптивное количество процессов
+      AIRFLOW__CELERY__WORKER_AUTOSCALE: "8,2"
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  # ================================================================
+  # Airflow Triggerer — deferrable operators
+  # ================================================================
+  airflow-triggerer:
+    <<: *airflow-common
+    container_name: datastack2-airflow-triggerer
+    command: airflow triggerer
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import os; os.kill(1, 0)'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  # ================================================================
+  # Airflow DAG Processor — парсинг DAG-файлов (НОВОЕ в Airflow 3)
+  # ================================================================
+  # В Airflow 2: scheduler сам парсил DAG-файлы
+  # В Airflow 3: парсинг вынесен в отдельный процесс
+  #   - Сканирует ./dags/ каждые N секунд
+  #   - Парсит Python-файлы → сериализует в Metadata DB
+  #   - Scheduler читает уже готовые DAG-и из БД
+  # ================================================================
+  airflow-dag-processor:
+    <<: *airflow-common
+    container_name: datastack2-airflow-dag-processor
+    command: airflow dag-processor
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import os; os.kill(1, 0)'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  # ================================================================
+  # Flower — Celery мониторинг
+  # ================================================================
+  flower:
+    <<: *airflow-common
+    container_name: datastack2-flower
+    command: airflow celery flower
+    ports:
+      - "5555:5555"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:5555/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully

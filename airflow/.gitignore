@@ -1,0 +1,24 @@
+# Секреты
+.env
+
+# Файл паролей SimpleAuthManager (генерируется на сервере)
+auth/
+
+# Логи (гигабайты, генерируются контейнерами)
+logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

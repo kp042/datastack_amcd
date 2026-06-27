@@ -1,0 +1,100 @@
+# ============================================================================
+# Python-зависимости для Airflow 3.1.7
+# ============================================================================
+# Устанавливаются с --constraint для гарантии совместимости.
+# Не пинь жёстко версии — constraint-файл сделает это за тебя.
+# ============================================================================
+
+# ═══════════════════════════════════════════════════════════════
+# AIRFLOW PROVIDERS (расширения для внешних систем)
+# ═══════════════════════════════════════════════════════════════
+
+# --- Executor ---
+# CeleryExecutor: распределённое выполнение задач через очередь
+# В Airflow 3.x Executor вынесен в отдельный провайдер
+apache-airflow-providers-celery
+
+# Redis: message broker для CeleryExecutor
+# (задачи ставятся в очередь Redis, Workers забирают)
+apache-airflow-providers-redis
+
+# --- Data Sources ---
+# Google Cloud: BigQuery (GA4 export), GCS
+# Фаза: BigQuery → MinIO → ClickHouse
+apache-airflow-providers-google
+
+# PostgreSQL: микросервисы бэкенда (множество БД)
+# Фаза: PG → ClickHouse
+apache-airflow-providers-postgres
+
+# MySQL: Legacy системы, MySQL 5.7
+# Фаза: MySQL → ClickHouse
+apache-airflow-providers-mysql
+
+# Amazon S3 (S3-совместимый API): MinIO
+# Используется для: загрузка/выгрузка Parquet-файлов через S3 API
+apache-airflow-providers-amazon
+
+# HTTP: REST API источники (будущие интеграции)
+apache-airflow-providers-http
+
+# ═══════════════════════════════════════════════════════════════
+# ДРАЙВЕРЫ БАЗ ДАННЫХ
+# ═══════════════════════════════════════════════════════════════
+
+# ClickHouse: HTTP-драйвер для запись/чтение данных
+# Используется в PythonOperator для INSERT/SELECT
+clickhouse-connect>=0.7.0
+
+# MySQL: pure-Python драйвер для MySQL 5.7
+# pymysql — не требует системных библиотек, работает везде
+# Строка подключения: mysql+pymysql://user:pass@host:3306/db
+PyMySQL>=1.1.0
+
+# MySQL: C-драйвер (быстрее pymysql, но нужен libmysqlclient)
+# Строка подключения: mysql+mysqldb://user:pass@host:3306/db
+mysqlclient>=2.2.0
+
+# SQLAlchemy: ORM и database toolkit
+# Airflow использует внутри, но для кастомных PythonOperator тоже полезен
+# Пригодится для: generic extract из любой SQL-базы
+SQLAlchemy>=2.0.0
+
+# ═══════════════════════════════════════════════════════════════
+# ОБРАБОТКА ДАННЫХ
+# ═══════════════════════════════════════════════════════════════
+
+# Pandas: DataFrame для ETL трансформаций
+# BigQuery result → DataFrame → Parquet → MinIO
+pandas>=2.2.0
+
+# PyArrow: Parquet формат + columnar processing
+# Формат хранения промежуточных данных в MinIO
+pyarrow>=15.0.0
+
+# boto3: low-level S3 API для MinIO
+# Когда нужен тонкий контроль (multipart upload, presigned URLs)
+boto3>=1.34.0
+
+# MinIO: Python-клиент для S3-совместимого хранилища
+# Используется в: plugins/utils/minio_client.py
+# Для: сохранение/чтение Parquet файлов в MinIO (промежуточный слой EL)
+# boto3 — low-level S3 API, minio — high-level клиент с удобным интерфейсом
+minio>=7.2.0
+
+# ═══════════════════════════════════════════════════════════════
+# УВЕДОМЛЕНИЯ
+# ═══════════════════════════════════════════════════════════════
+
+# aiogram: async Telegram Bot framework
+# Для: алерты при ошибках DAG, Data Quality уведомления,
+#       ежедневные саммари по загрузкам
+aiogram>=3.10.0
+
+# ═══════════════════════════════════════════════════════════════
+# МОНИТОРИНГ
+# ═══════════════════════════════════════════════════════════════
+
+# Flower: веб-UI для мониторинга Celery workers
+# Показывает: очереди, активные задачи, статус воркеров
+flower>=2.0.0
